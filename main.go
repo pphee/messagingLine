@@ -7,13 +7,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 )
 
-type LineMessage struct {
+type TextEvent struct {
 	Destination string `json:"destination"`
 	Events      []struct {
 		ReplyToken string `json:"replyToken"`
@@ -29,23 +28,6 @@ type LineMessage struct {
 			Text string `json:"text"`
 		} `json:"message"`
 	} `json:"events"`
-}
-
-type PostbackEvent struct {
-	Events []struct {
-		Type       string `json:"type"`
-		ReplyToken string `json:"replyToken"`
-		Source     struct {
-			UserID string `json:"userId"`
-			Type   string `json:"type"`
-		} `json:"source"`
-		Timestamp int64  `json:"timestamp"`
-		Mode      string `json:"mode"`
-		Postback  struct {
-			Data string `json:"data"`
-		} `json:"postback"`
-	} `json:"events"`
-	Destination string `json:"destination"`
 }
 
 type StickerEvent struct {
@@ -133,6 +115,28 @@ type AudioEvent struct {
 	Destination string `json:"destination"`
 }
 
+type VideoEvent struct {
+	Events []struct {
+		Type       string `json:"type"`
+		ReplyToken string `json:"replyToken"`
+		Source     struct {
+			UserID string `json:"userId"`
+			Type   string `json:"type"`
+		} `json:"source"`
+		Timestamp int64  `json:"timestamp"`
+		Mode      string `json:"mode"`
+		Message   struct {
+			Type            string `json:"type"`
+			ID              string `json:"id"`
+			ContentProvider struct {
+				Type string `json:"type"`
+			}
+			Duration int `json:"duration"`
+		} `json:"message"`
+	} `json:"events"`
+	Destination string `json:"destination"`
+}
+
 type TextMessage struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`
@@ -162,6 +166,13 @@ type AudioMessage struct {
 	Duration int    `json:"duration"`
 }
 
+type VideoMessage struct {
+	Type               string `json:"type"`
+	OriginalContentUrl string `json:"originalContentUrl"`
+	PreviewImageUrl    string `json:"previewImageUrl"`
+	TrackingId         string `json:"trackingId"`
+}
+
 type ReplyMessage struct {
 	ReplyToken string `json:"replyToken"`
 	Messages   []Text `json:"messages"`
@@ -183,6 +194,11 @@ type ReplyMessageImage struct {
 }
 
 type ReplyAudio struct {
+	ReplyToken string        `json:"replyToken"`
+	Messages   []interface{} `json:"messages"`
+}
+
+type ReplyMessageVideo struct {
 	ReplyToken string        `json:"replyToken"`
 	Messages   []interface{} `json:"messages"`
 }
@@ -229,7 +245,7 @@ func replyMessageLine(message ReplyMessage) error {
 	}(resp.Body)
 
 	//body
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
@@ -259,7 +275,7 @@ func replyStickerLine(message ReplyMessageSticker) error {
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
@@ -290,7 +306,7 @@ func replyLocationLine(message ReplyMessageLocation) error {
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
@@ -320,7 +336,7 @@ func replyImageLine(message ReplyMessageImage) error {
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
@@ -350,7 +366,42 @@ func replyAudioLine(message ReplyAudio) error {
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("Response from LINE API: %s, Body: %s", resp.Status, string(body))
+	return nil
+}
+
+func replyVideoLine(message ReplyMessageVideo) error {
+	value, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+
+	url := "https://api.line.me/v2/bot/message/reply"
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(value))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Add("Authorization", "Bearer "+os.Getenv("ACCESS_TOKEN"))
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+
+		}
+	}(resp.Body)
+
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
@@ -365,6 +416,8 @@ func sendMessageLine(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	fmt.Println("msgRequest", msgRequest)
 
 	if err := sendToLineAPI("https://api.line.me/v2/bot/message/push", msgRequest); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -399,7 +452,7 @@ func sendToLineAPI(url string, data interface{}) error {
 		}
 	}(resp.Body)
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
@@ -521,22 +574,21 @@ func handleAudioMessage(message AudioMessage, replyToken string) {
 	}
 }
 
-func handlePostbackEvent(pbEvent PostbackEvent) {
-	fmt.Printf("Received postback event: %+v\n", pbEvent)
-
-	replyText := "isus"
-	reply := ReplyMessage{
-		ReplyToken: pbEvent.Events[0].ReplyToken,
-		Messages: []Text{
-			{
-				Type: "text",
-				Text: replyText,
+func handleVideoReply(replyToken string) {
+	videoReply := ReplyMessageVideo{
+		ReplyToken: replyToken,
+		Messages: []interface{}{
+			VideoMessage{
+				Type:               "video",
+				OriginalContentUrl: "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
+				PreviewImageUrl:    "https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+				TrackingId:         "track-id",
 			},
 		},
 	}
 
-	if err := replyMessageLine(reply); err != nil {
-		log.Printf("Error in replying to message: %v\n", err)
+	if err := replyVideoLine(videoReply); err != nil {
+		log.Printf("Error replying with video: %v\n", err)
 	}
 }
 
@@ -550,7 +602,7 @@ func mapEventMessage(source interface{}, target interface{}) error {
 
 // send
 func sendMessage(c *gin.Context) {
-	var line LineMessage
+	var line TextEvent
 
 	if err := c.BindJSON(&line); err != nil {
 		log.Printf("Error in binding JSON: %v\n", err)
@@ -691,30 +743,30 @@ func sendAudioMessage(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Message sent successfully"})
 }
 
-func sendPostbackMessage(c *gin.Context) {
-	var Postback PostbackEvent
-	if err := c.ShouldBindJSON(&Postback); err != nil {
+func sendVideoMessage(c *gin.Context) {
+	var Video VideoEvent
+	if err := c.ShouldBindJSON(&Video); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	fmt.Printf("------------------------Request------------------------ %+v\n", Postback)
+	fmt.Printf("------------------------Request------------------------ %+v\n", Video)
 
-	for _, event := range Postback.Events {
+	for _, event := range Video.Events {
 		if event.Type == "message" {
-			if event.Type == "postback" {
-				var message PostbackEvent
-				if err := mapEventMessage(event.Postback, &message); err != nil {
+			if event.Message.Type == "video" {
+				var message VideoMessage
+				if err := mapEventMessage(event.Message, &message); err != nil {
 					log.Printf("Error in mapping event message: %v\n", err)
 					c.JSON(http.StatusInternalServerError, gin.H{"error": "Error in request"})
 					return
 				}
-				handlePostbackEvent(message)
+				handleVideoReply(event.ReplyToken) // Call handleVideoReply with only the reply token
 			}
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Message sent successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "Video message processed successfully"})
 }
 
 func main() {
@@ -733,7 +785,7 @@ func main() {
 	r.POST("/location", sendLocationMessage)
 	r.POST("/image", sendImageMessage)
 	r.POST("/audio", sendAudioMessage)
-	r.POST("/postback", sendPostbackMessage)
+	r.POST("/video", sendVideoMessage)
 
 	r.POST("/send", sendMessageLine)
 
